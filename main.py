@@ -8,9 +8,9 @@ from pyrogram.types import Message
 # ==================== CONFIG ====================
 # Get API_ID / API_HASH from https://my.telegram.org
 # Get BOT_TOKEN from @BotFather
-API_ID = 12345678
-API_HASH = "your_api_hash_here"
-BOT_TOKEN = "your_bot_token_here"
+API_ID = 36282056
+API_HASH = "3a948acece533f362b4c90b2b3c14b60"
+BOT_TOKEN = "8737705568:AAGSjZlCgT6yrs6h045X88EEq63-iZLCiD4"
 
 DOWNLOAD_DIR = "downloads"
 
