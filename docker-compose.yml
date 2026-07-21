@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  hardsub-bot:
+    build: .
+    container_name: hardsub-bot
+    restart: unless-stopped
+    volumes:
+      - ./downloads:/app/downloads
+      - ./sessions:/app/sessions
