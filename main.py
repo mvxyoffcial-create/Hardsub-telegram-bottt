@@ -2,8 +2,10 @@ import os
 import re
 import time
 import asyncio
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, idle
+from pyrogram.errors import FloodWait
 from pyrogram.types import Message
+from aiohttp import web
 
 # ==================== CONFIG ====================
 # Get API_ID / API_HASH from https://my.telegram.org
@@ -24,7 +26,20 @@ MAX_CONCURRENT_TRANSMISSIONS = 6
 # veryfast, faster, fast, medium...
 FFMPEG_PRESET = "ultrafast"
 FFMPEG_CRF = "23"
+
+# Fixed thread count instead of "0" (auto). Auto-detect can spawn far
+# more encoder threads than a small container's memory budget allows,
+# which gets the process OOM-killed with no ffmpeg error message at all
+# (exactly the "stops after Output #0..." symptom). Tune to your plan's
+# CPU allocation.
+FFMPEG_THREADS = "2"
+
+# Koyeb (and most PaaS platforms) require the app to bind $PORT and
+# answer health checks, or they'll kill/restart the container -- which
+# looks identical to a silent ffmpeg crash if it happens mid-burn.
+PORT = int(os.environ.get("PORT", 8000))
 # ==================================================
+
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
@@ -41,7 +56,7 @@ app = Client(
 pending = {}
 
 SUB_EXTS = (".srt", ".ass", ".ssa", ".vtt")
-EDIT_INTERVAL = 2.5  # seconds between telegram message edits
+EDIT_INTERVAL = 1.5  # seconds between telegram message edits
 
 
 def human_size(n):
@@ -110,6 +125,12 @@ class ProgressTracker:
         )
         try:
             await self.status_msg.edit_text(text)
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            try:
+                await self.status_msg.edit_text(text)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -257,7 +278,7 @@ async def run_hardsub(video_path, sub_path, output_path, workdir, status_msg):
         "-c:v", "libx264",
         "-preset", FFMPEG_PRESET,
         "-crf", FFMPEG_CRF,
-        "-threads", "0",
+        "-threads", FFMPEG_THREADS,
         "-c:a", "copy",
         # prevents "Too many packets buffered for output stream" aborts,
         # which happen when the (slow) subtitle filter falls behind the
@@ -334,6 +355,28 @@ async def run_hardsub(video_path, sub_path, output_path, workdir, status_msg):
     return True, ""
 
 
+async def health(_request):
+    return web.Response(text="OK")
+
+
+async def start_health_server():
+    web_app = web.Application()
+    web_app.router.add_get("/", health)
+    web_app.router.add_get("/health", health)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"Health server listening on 0.0.0.0:{PORT}")
+
+
+async def main():
+    await start_health_server()
+    await app.start()
+    print("Hardsub Bot started.")
+    await idle()
+    await app.stop()
+
+
 if __name__ == "__main__":
-    print("Starting Hardsub Bot...")
-    app.run()
+    asyncio.run(main())
