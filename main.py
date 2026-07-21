@@ -8,9 +8,9 @@ from pyrogram.types import Message
 # ==================== CONFIG ====================
 # Get API_ID / API_HASH from https://my.telegram.org
 # Get BOT_TOKEN from @BotFather
-API_ID = 36282056
-API_HASH = "3a948acece533f362b4c90b2b3c14b60"
-BOT_TOKEN = "8737705568:AAGSjZlCgT6yrs6h045X88EEq63-iZLCiD4"
+API_ID = 12345678
+API_HASH = "your_api_hash_here"
+BOT_TOKEN = "your_bot_token_here"
 
 DOWNLOAD_DIR = "downloads"
 
@@ -20,6 +20,8 @@ DOWNLOAD_DIR = "downloads"
 MAX_CONCURRENT_TRANSMISSIONS = 6
 
 # ffmpeg encode speed. ultrafast = fastest burn, slightly larger file.
+# Options (fastest -> slowest, smaller file): ultrafast, superfast,
+# veryfast, faster, fast, medium...
 FFMPEG_PRESET = "ultrafast"
 FFMPEG_CRF = "23"
 # ==================================================
@@ -35,9 +37,11 @@ app = Client(
     max_concurrent_transmissions=MAX_CONCURRENT_TRANSMISSIONS,
 )
 
+# user_id -> {"video": path, "dir": path}
 pending = {}
+
 SUB_EXTS = (".srt", ".ass", ".ssa", ".vtt")
-EDIT_INTERVAL = 2.5
+EDIT_INTERVAL = 2.5  # seconds between telegram message edits
 
 
 def human_size(n):
@@ -94,7 +98,7 @@ class ProgressTracker:
         self.last_edit = now
 
         elapsed = max(now - self.start, 0.001)
-        speed = current / elapsed
+        speed = current / elapsed  # bytes/sec
         pct = (current * 100 / total) if total else 0
         eta = (total - current) / speed if speed > 0 else None
 
@@ -169,10 +173,19 @@ async def handle_file(client: Client, message: Message):
 
         ok, err = await run_hardsub(video_path, sub_path, output_path, user_dir, status)
         if not ok:
-            preview = err[:700] + "\n...\n" + err[-700:] if len(err) > 1500 else err
+            log_path = os.path.join(user_dir, "ffmpeg_error.log")
+            with open(log_path, "w", encoding="utf-8", errors="ignore") as f:
+                f.write(err)
+            preview = err[-700:]
             await status.edit_text(
-                f"FFmpeg failed:\n{preview}", parse_mode=enums.ParseMode.DISABLED
+                f"FFmpeg failed. Last part of the log:\n{preview}\n\n"
+                f"Full log attached below.",
+                parse_mode=enums.ParseMode.DISABLED,
             )
+            try:
+                await client.send_document(chat_id=message.chat.id, document=log_path)
+            except Exception:
+                pass
             cleanup(uid)
             return
 
@@ -195,6 +208,7 @@ async def handle_file(client: Client, message: Message):
 
 
 async def get_duration_seconds(path, workdir):
+    """Uses ffprobe to get video duration in seconds, for progress % calc."""
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
@@ -218,15 +232,26 @@ SPEED_RE = re.compile(rb"speed=\s*([\d.]+)x")
 
 
 async def run_hardsub(video_path, sub_path, output_path, workdir, status_msg):
+    """
+    Runs ffmpeg from inside `workdir` using relative filenames only
+    (avoids subtitle-filter path-escaping issues with special characters),
+    and streams -progress output back into a live Telegram progress bar.
+    """
     video_name = os.path.basename(video_path)
     sub_name = os.path.basename(sub_path)
     out_name = os.path.basename(output_path)
 
     duration = await get_duration_seconds(video_path, workdir)
+
     vf = f"subtitles={sub_name}"
 
+    try:
+        await status_msg.edit_text(f"🔥 Burning subtitles\n[{bar(0)}] 0%\nstarting...")
+    except Exception:
+        pass
+
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-y", "-nostdin",
         "-i", video_name,
         "-vf", vf,
         "-c:v", "libx264",
@@ -234,13 +259,18 @@ async def run_hardsub(video_path, sub_path, output_path, workdir, status_msg):
         "-crf", FFMPEG_CRF,
         "-threads", "0",
         "-c:a", "copy",
+        # prevents "Too many packets buffered for output stream" aborts,
+        # which happen when the (slow) subtitle filter falls behind the
+        # copied audio stream during muxing
+        "-max_muxing_queue_size", "9999",
         "-progress", "pipe:1",
         "-nostats",
         out_name,
     ]
 
     proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=workdir,
+        *cmd,
+        cwd=workdir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -268,7 +298,8 @@ async def run_hardsub(video_path, sub_path, output_path, workdir, status_msg):
         m = TIME_RE.search(line)
         if m and duration:
             out_time_s = int(m.group(1)) / 1_000_000
-            last_pct = min(100.0, out_time_s / duration * 100)
+            pct = min(100.0, out_time_s / duration * 100)
+            last_pct = pct
 
         sm = SPEED_RE.search(line)
         enc_speed = sm.group(1).decode() if sm else "?"
@@ -276,7 +307,9 @@ async def run_hardsub(video_path, sub_path, output_path, workdir, status_msg):
         if now - last_edit > EDIT_INTERVAL:
             last_edit = now
             elapsed = now - start
-            eta = elapsed * (100 - last_pct) / last_pct if last_pct > 0 else None
+            eta = None
+            if last_pct > 0:
+                eta = elapsed * (100 - last_pct) / last_pct
             text = (
                 f"🔥 Burning subtitles\n"
                 f"[{bar(last_pct)}] {last_pct:.1f}%\n"
