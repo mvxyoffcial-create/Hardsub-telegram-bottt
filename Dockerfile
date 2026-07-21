@@ -17,4 +17,6 @@ COPY main.py .
 
 RUN mkdir -p downloads sessions
 
+EXPOSE 8000
+
 CMD ["python", "main.py"]
