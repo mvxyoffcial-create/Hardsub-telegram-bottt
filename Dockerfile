@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install FFmpeg and basic runtime dependencies
+# Install FFmpeg with font support for subtitles
 RUN apt-get update && \
     apt-get install -y ffmpeg fonts-freefont-ttf && \
     apt-get clean && \
